@@ -1,0 +1,13 @@
+ddgs
+requests
+beautifulsoup4
+pandas
+openpyxl
+duckduckgo-search
+playwright-stealth
+rapidfuzz
+PyMuPDF
+dnspython
+pdfplumber
+googlesearch-python
+lxml
