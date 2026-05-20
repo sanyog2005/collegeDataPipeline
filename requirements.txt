@@ -4,6 +4,7 @@ beautifulsoup4
 pandas
 openpyxl
 duckduckgo-search
+playwright
 playwright-stealth
 rapidfuzz
 PyMuPDF

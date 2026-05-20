@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-AISHE_OUTPUT = BASE_DIR / "new_north_india_deep_contacts.xlsx"
+AISHE_OUTPUT = BASE_DIR / "north_india_deep_contacts.xlsx"
 PIPELINE_INPUT = BASE_DIR / "north_india_deep_contacts.xlsx"
 BACKFILL_SCRIPT = BASE_DIR / "backfill_placement.py"
 DEEP_CRAWL_SCRIPT = BASE_DIR / "deep_crawl.py"
@@ -21,6 +21,10 @@ def run_step(script_path: Path) -> None:
     subprocess.run([sys.executable, str(script_path)], cwd=BASE_DIR, check=True)
 
 
+def run_step_with_args(script_path: Path, extra_args: list[str]) -> None:
+    subprocess.run([sys.executable, str(script_path), *extra_args], cwd=BASE_DIR, check=True)
+
+
 def ensure_file_exists(path: Path, label: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{label} was not created: {path}")
@@ -28,7 +32,8 @@ def ensure_file_exists(path: Path, label: str) -> None:
 
 def prepare_pipeline_input() -> None:
     ensure_file_exists(AISHE_OUTPUT, "AISHE scraper output")
-    shutil.copy2(AISHE_OUTPUT, PIPELINE_INPUT)
+    if AISHE_OUTPUT != PIPELINE_INPUT:
+        shutil.copy2(AISHE_OUTPUT, PIPELINE_INPUT)
 
 
 def finalize_output(final_output: Path) -> None:
@@ -45,6 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(FINAL_OUTPUT_DEFAULT),
         help="Path for the final cleaned workbook.",
     )
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=0,
+        help="Limit how many rows each stage processes for a test run.",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Shortcut for --max-rows 3.",
+    )
     return parser
 
 
@@ -52,19 +68,21 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     final_output = Path(args.final_output)
+    max_rows = 3 if args.test_mode and args.max_rows <= 0 else args.max_rows
+    stage_args = ["--max-rows", str(max_rows)] if max_rows and max_rows > 0 else []
 
     print("[1/4] Running AISHE scraper...")
-    run_step(BASE_DIR / "aishe_scraper.py")
+    run_step_with_args(BASE_DIR / "aishe_scraper.py", stage_args)
 
     print("[2/4] Preparing workbook for backfill stage...")
     prepare_pipeline_input()
 
     print("[3/4] Running placement backfill...")
-    run_step(BACKFILL_SCRIPT)
+    run_step_with_args(BACKFILL_SCRIPT, stage_args)
 
     print("[4/4] Running deep crawl and final cleanup...")
-    run_step(DEEP_CRAWL_SCRIPT)
-    run_step(DATA_CLEAN_SCRIPT)
+    run_step_with_args(DEEP_CRAWL_SCRIPT, stage_args)
+    run_step_with_args(DATA_CLEAN_SCRIPT, stage_args)
 
     finalize_output(final_output)
     print(f"Pipeline complete. Final file: {final_output}")

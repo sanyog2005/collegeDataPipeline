@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlparse
 from collections import deque
 import urllib3
 import logging
+import argparse
 
 # --- External Intelligence Libraries ---
 from googlesearch import search
@@ -282,6 +283,10 @@ def process_empty_row(college_name, website_url):
 # SEQUENTIAL MAIN LOOP
 # ==========================================
 def main():
+    parser = argparse.ArgumentParser(description="Deep crawl placement contacts in the AISHE workbook.")
+    parser.add_argument("--max-rows", type=int, default=0, help="Limit how many rows are processed for a test run.")
+    args = parser.parse_args()
+
     if not os.path.exists(INPUT_FILE):
         logger.critical(f"Error: {INPUT_FILE} not found.")
         return
@@ -295,7 +300,9 @@ def main():
     updates_made = 0
 
     # Sequential iteration (one college at a time)
-    for index, row in df.iterrows():
+    working_df = df.head(args.max_rows) if args.max_rows and args.max_rows > 0 else df
+
+    for index, row in working_df.iterrows():
         name = row.get('college_name')
         url = row.get('website_url')
         raw_email_val = str(row.get('placement_emails')).strip()

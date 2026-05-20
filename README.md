@@ -26,6 +26,12 @@ To run the full automated pipeline end to end:
 python run_pipeline.py --final-output final_north_india_deep_contacts.xlsx
 ```
 
+To run a small test pass on only a few rows:
+
+```bash
+python run_pipeline.py --test-mode --final-output final_north_india_deep_contacts_test.xlsx
+```
+
 ## Output
 
 - `north_india_colleges.xlsx` contains a `Colleges` sheet and a `Faculty` sheet

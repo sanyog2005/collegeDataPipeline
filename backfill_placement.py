@@ -9,6 +9,7 @@ from playwright.sync_api import sync_playwright
 from ddgs import DDGS
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import argparse
 
 # --- CONFIGURATION ---
 INPUT_FILE = 'north_india_deep_contacts.xlsx'
@@ -222,6 +223,10 @@ def process_college(college_name, home_url):
     
 # --- MAIN EXCEL RUNNER ---
 def main():
+    parser = argparse.ArgumentParser(description="Backfill placement contacts in the AISHE workbook.")
+    parser.add_argument("--max-rows", type=int, default=0, help="Limit how many rows are processed for a test run.")
+    args = parser.parse_args()
+
     if not os.path.exists(INPUT_FILE):
         print(f"Error: {INPUT_FILE} not found in this folder.")
         return
@@ -236,7 +241,9 @@ def main():
     if 'placement_phones' not in df.columns: df['placement_phones'] = ''
 
     total_processed = 0
-    for index, row in df.iterrows():
+    working_df = df.head(args.max_rows) if args.max_rows and args.max_rows > 0 else df
+
+    for index, row in working_df.iterrows():
         url = row.get('website_url')
         name = row.get('college_name')
 
