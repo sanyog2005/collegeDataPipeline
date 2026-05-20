@@ -575,9 +575,17 @@ def process_single_college(row, checkpoint, checkpoint_file, output_file):
             checkpoint["processed_codes"].append(aishe)
             with open(checkpoint_file, "w") as f:
                 json.dump(checkpoint, f)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Scrape AISHE colleges and export contact data.")
+    parser.add_argument("--max-rows", type=int, default=0, help="Limit how many colleges are processed for a test run.")
+    return parser
                 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    parser = build_parser()
+    args = parser.parse_args()
     
     excel_files = ["universities.xlsx", "colleges.xlsx", "standalone.xlsx"]
     output_file = "north_india_deep_contacts.xlsx"
@@ -591,6 +599,9 @@ def main():
         logging.info(f"Loaded checkpoint. Resuming with {len(checkpoint['processed_codes'])} already processed.")
 
     df = load_and_prepare_aishe_data(excel_files)
+    if args.max_rows and args.max_rows > 0:
+        df = df.head(args.max_rows)
+        logging.info(f"Test mode enabled. Limiting AISHE scrape to {len(df)} rows.")
 
     # --- THE PARALLEL THREAD POOL ---
     # MAX_WORKERS = 3. Do not set this higher than 5 unless you want to get IP banned.

@@ -20,10 +20,17 @@ pip install -r requirements.txt
 python north_india_college_scraper.py --output north_india_colleges.xlsx --checkpoint north_india_college_checkpoint.json
 ```
 
+To run the full automated pipeline end to end:
+
+```bash
+python run_pipeline.py --final-output final_north_india_deep_contacts.xlsx
+```
+
 ## Output
 
 - `north_india_colleges.xlsx` contains a `Colleges` sheet and a `Faculty` sheet
 - `north_india_college_checkpoint.json` stores progress for resume support
+- `final_north_india_deep_contacts.xlsx` is the cleaned final workbook produced by the pipeline
 
 ## Resume behavior
 
