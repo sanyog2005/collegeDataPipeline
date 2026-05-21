@@ -3,9 +3,26 @@ name: North India College Scraper
 # This allows you to run it manually from the GitHub website
 on:
   workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "How many new AISHE rows to process per run"
+        required: false
+        default: "50"
+      auto_continue:
+        description: "Dispatch the next batch automatically if work remains"
+        required: false
+        default: "true"
   # Uncomment the next two lines to make it run automatically every night at midnight UTC
   # schedule:
   #   - cron: '0 0 * * *'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: north-india-college-scraper
+  cancel-in-progress: false
 
 jobs:
   scrape:
@@ -14,6 +31,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,9 +50,71 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run Scraper Pipeline
+        env:
+          BATCH_SIZE: ${{ inputs.batch_size }}
         run: |
           # Running the pipeline. We don't use systemd here because GitHub manages the execution.
-          python run_pipeline.py --final-output final_north_india_deep_contacts.xlsx
+          python run_pipeline.py --batch-size "$BATCH_SIZE" --final-output final_north_india_deep_contacts.xlsx
+
+      - name: Commit scraper state
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scraper_checkpoint.json
+          if [ -f official_website_cache.json ]; then
+            git add official_website_cache.json
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "Update scraper state"
+            git push
+          else
+            echo "No state changes to commit."
+          fi
+
+      - name: Check if more rows remain
+        id: progress
+        if: always()
+        env:
+          BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from aishe_scraper import load_and_prepare_aishe_data
+
+          checkpoint_file = "scraper_checkpoint.json"
+          checkpoint = {"processed_codes": []}
+          if os.path.exists(checkpoint_file):
+              with open(checkpoint_file, "r", encoding="utf-8") as handle:
+                  checkpoint = json.load(handle)
+
+          total_rows = len(load_and_prepare_aishe_data(["universities.xlsx", "colleges.xlsx", "standalone.xlsx"]))
+          processed_rows = len(checkpoint.get("processed_codes", []))
+          continue_needed = processed_rows < total_rows
+
+          output_file = os.environ["GITHUB_OUTPUT"]
+          with open(output_file, "a", encoding="utf-8") as handle:
+              handle.write(f"continue_needed={'true' if continue_needed else 'false'}\n")
+              handle.write(f"processed_rows={processed_rows}\n")
+              handle.write(f"total_rows={total_rows}\n")
+          print(f"Processed {processed_rows} of {total_rows}. Continue: {continue_needed}")
+          PY
+
+      - name: Dispatch next batch
+        if: always() && inputs.auto_continue == 'true' && steps.progress.outputs.continue_needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/scraper.yml/dispatches \
+            -d "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"batch_size\":\"${BATCH_SIZE}\",\"auto_continue\":\"true\"}}"
 
       - name: Upload Excel file as Artifact
         uses: actions/upload-artifact@v4

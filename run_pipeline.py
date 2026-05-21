@@ -61,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Shortcut for --max-rows 3.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Process only this many new AISHE rows in the scraper stage.",
+    )
     return parser
 
 
@@ -69,20 +75,23 @@ def main() -> int:
     args = parser.parse_args()
     final_output = Path(args.final_output)
     max_rows = 3 if args.test_mode and args.max_rows <= 0 else args.max_rows
-    stage_args = ["--max-rows", str(max_rows)] if max_rows and max_rows > 0 else []
+    test_stage_args = ["--max-rows", str(max_rows)] if max_rows and max_rows > 0 else []
+    aishe_stage_args = list(test_stage_args)
+    if args.batch_size and args.batch_size > 0:
+        aishe_stage_args.extend(["--batch-size", str(args.batch_size)])
 
     print("[1/4] Running AISHE scraper...")
-    run_step_with_args(BASE_DIR / "aishe_scraper.py", stage_args)
+    run_step_with_args(BASE_DIR / "aishe_scraper.py", aishe_stage_args)
 
     print("[2/4] Preparing workbook for backfill stage...")
     prepare_pipeline_input()
 
     print("[3/4] Running placement backfill...")
-    run_step_with_args(BACKFILL_SCRIPT, stage_args)
+    run_step_with_args(BACKFILL_SCRIPT, test_stage_args)
 
     print("[4/4] Running deep crawl and final cleanup...")
-    run_step_with_args(DEEP_CRAWL_SCRIPT, stage_args)
-    run_step_with_args(DATA_CLEAN_SCRIPT, stage_args)
+    run_step_with_args(DEEP_CRAWL_SCRIPT, test_stage_args)
+    run_step_with_args(DATA_CLEAN_SCRIPT, test_stage_args)
 
     finalize_output(final_output)
     print(f"Pipeline complete. Final file: {final_output}")

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import random
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -20,6 +21,49 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 FILE_LOCK = threading.Lock()
+SEARCH_CACHE_LOCK = threading.Lock()
+SEARCH_ENGINE_LOCK = threading.Lock()
+SEARCH_CACHE_FILE = Path("official_website_cache.json")
+SEARCH_CACHE: Dict[str, str] = {}
+SEARCH_COOLDOWN_UNTIL = 0.0
+
+
+def load_search_cache() -> None:
+    global SEARCH_CACHE
+    if not SEARCH_CACHE_FILE.exists():
+        return
+    try:
+        with SEARCH_CACHE_FILE.open("r", encoding="utf-8") as handle:
+            cache_data = json.load(handle)
+        if isinstance(cache_data, dict):
+            SEARCH_CACHE = {str(key): str(value) for key, value in cache_data.items() if value}
+    except Exception as error:
+        logging.warning(f"Could not load search cache: {error}")
+
+
+def save_search_cache() -> None:
+    with SEARCH_CACHE_LOCK:
+        temp_path = SEARCH_CACHE_FILE.with_suffix(".tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(SEARCH_CACHE, handle, ensure_ascii=False, indent=2)
+        temp_path.replace(SEARCH_CACHE_FILE)
+
+
+def get_search_cache_key(college_name: str, state: str) -> str:
+    return f"{college_name.strip().lower()}|{state.strip().lower()}"
+
+
+def get_cached_website(college_name: str, state: str) -> Optional[str]:
+    cache_key = get_search_cache_key(college_name, state)
+    with SEARCH_CACHE_LOCK:
+        return SEARCH_CACHE.get(cache_key)
+
+
+def store_cached_website(college_name: str, state: str, website_url: str) -> None:
+    cache_key = get_search_cache_key(college_name, state)
+    with SEARCH_CACHE_LOCK:
+        SEARCH_CACHE[cache_key] = website_url
+    save_search_cache()
 # --- CONFIGURATION ---
 STATE_QUERIES = [
     # North India - States
@@ -260,16 +304,23 @@ def load_and_prepare_aishe_data(file_paths: List[str]) -> pd.DataFrame:
     return master_df.drop_duplicates(subset=['Aishe_Code'])
 
 def find_official_website(college_name: str, state: str) -> Optional[str]:
+    global SEARCH_COOLDOWN_UNTIL
+
+    cached_website = get_cached_website(college_name, state)
+    if cached_website:
+        logging.info(f"Using cached website for {college_name} ({state})")
+        return cached_website
+
     # We leave .gov.in in the search query so DuckDuckGo still looks for AIIMS
     query_strict = f'"{college_name}" {state} site:.ac.in OR site:.edu.in OR site:.edu OR site:.org.in OR site:.gov.in'
     query_broad = f'"{college_name}" {state} official website'
-    
+
     # --- NEW: Added Government Portal Keywords ---
     seo_domain_keywords = [
         'study', 'career', 'exam', 'result', 'naukri', 'sarkari', 'shiksha',
         'admission', 'dekho', 'university', 'colleges', 'getmy', 'sarvgyan', 'jagran',
         'blog', 'fever', 'portal', 'guide', 'info',
-        'cee', 'dhe', 'nta', 'aicte', 'ugc', 'board', 'counselling' 
+        'cee', 'dhe', 'nta', 'aicte', 'ugc', 'board', 'counselling'
     ]
     bad_url_paths = ['/colleges/', '/university/', '/institute/', '/list', '/courses', '.pdf', '/directory', '/blog/']
 
@@ -277,32 +328,25 @@ def find_official_website(college_name: str, state: str) -> Optional[str]:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         path = parsed.path.lower()
-        
-        # 1. Reject Blacklist
+
         if any(b in domain for b in BLOCKED_DOMAINS):
             return False
-            
-        # 2. Reject SEO & Portal Buzzwords
-        # REMOVED .gov.in from the safe list so state portals get caught here!
+
         if not domain.endswith((".ac.in", ".edu.in")):
             if any(seo_word in domain for seo_word in seo_domain_keywords):
                 return False
-                
-        # 3. Reject bad paths
+
         if any(bad in path for bad in bad_url_paths):
             return False
-            
-        # 4. Reject suspiciously long paths
+
         if path.count('/') > 2 and len(path) > 20:
             return False
 
-        # --- LAYER 3 NAME-MATCH HEURISTIC ---
-        # REMOVED .gov.in from the safe list! It must prove it matches the college name.
         if not domain.endswith((".ac.in", ".edu.in", ".edu")):
             clean_name = re.sub(r'[^a-zA-Z\s]', '', c_name.lower())
             ignore_words = {'of', 'and', 'the', 'university', 'college', 'institute', 'for', 'science', 'technology', 'medical', 'all', 'india', 'state'}
             name_words = [w for w in clean_name.split() if w not in ignore_words and len(w) > 3]
-            
+
             acronym = "".join([w[0] for w in clean_name.split() if w not in ignore_words])
 
             match_found = False
@@ -310,43 +354,56 @@ def find_official_website(college_name: str, state: str) -> Optional[str]:
                 if word in domain:
                     match_found = True
                     break
-            
+
             if acronym and acronym in domain and len(acronym) > 2:
                 match_found = True
 
             if not match_found and len(name_words) > 0:
                 return False
-                
+
         return True
 
     try:
-        time.sleep(5)
-        with DDGS() as ddgs:
-            # ATTEMPT 1: STRICT DOMAINS
-            strict_results = list(ddgs.text(query_strict, max_results=5))
-            for item in strict_results:
-                url = item.get("href", "")
-                domain = urlparse(url).netloc.lower()
-                
-                if domain.endswith((".ac.in", ".edu.in", ".edu", ".org.in", ".ernet.in", ".gov.in")):
-                    if is_valid_homepage(url, college_name): 
-                        return url
+        with SEARCH_ENGINE_LOCK:
+            if time.time() < SEARCH_COOLDOWN_UNTIL:
+                wait_seconds = max(1.0, SEARCH_COOLDOWN_UNTIL - time.time())
+                logging.info(f"Search cooldown active. Waiting {wait_seconds:.1f}s before querying {college_name}.")
+                time.sleep(wait_seconds)
 
-            # ATTEMPT 2: BROAD DOMAINS
-            time.sleep(3)
-            broad_results = list(ddgs.text(query_broad, max_results=10))
-            
-            for item in broad_results:
-                url = item.get("href", "")
-                if is_valid_homepage(url, college_name):
-                    return url
+            time.sleep(random.uniform(2.0, 4.0))
+
+            with DDGS() as ddgs:
+                strict_results = list(ddgs.text(query_strict, max_results=5))
+                for item in strict_results:
+                    url = item.get("href", "")
+                    domain = urlparse(url).netloc.lower()
+
+                    if domain.endswith((".ac.in", ".edu.in", ".edu", ".org.in", ".ernet.in", ".gov.in")):
+                        if is_valid_homepage(url, college_name):
+                            store_cached_website(college_name, state, url)
+                            return url
+
+                time.sleep(random.uniform(1.0, 2.5))
+                broad_results = list(ddgs.text(query_broad, max_results=10))
+
+                for item in broad_results:
+                    url = item.get("href", "")
+                    if is_valid_homepage(url, college_name):
+                        store_cached_website(college_name, state, url)
+                        return url
 
             logging.warning(f"No clean/matching homepage found for {college_name}. Leaving blank.")
             return None
-            
+
     except Exception as e:
+        error_text = str(e)
+        if any(token in error_text for token in ("429", "403", "Too Many Requests", "Forbidden")):
+            SEARCH_COOLDOWN_UNTIL = time.time() + 1800
+            logging.warning(f"Search engine blocked request for {college_name}. Cooling down for 30 minutes.")
+            return None
+
         logging.warning(f"Search failed for {college_name}: {e}")
-        
+
     return None
 
 def fetch_soup(session: requests.Session, url: str) -> Optional[BeautifulSoup]:
@@ -513,7 +570,7 @@ def deep_scrape_college(session: requests.Session, playwright_page, base_url: st
     return college_record, faculty_records
 
 def process_single_college(row, checkpoint, checkpoint_file, output_file):
-    """The task that each parallel worker will execute."""
+    """Compatibility wrapper for the full discover-and-scrape flow."""
     aishe = str(row['Aishe_Code'])
     name = row['Clean_Name']
     state = row['State']
@@ -523,10 +580,17 @@ def process_single_college(row, checkpoint, checkpoint_file, output_file):
         return
 
     logging.info(f"Thread started for: {name} ({state})")
-    
-    # 2. Search for the URL
+
     website_url = find_official_website(name, state)
-    
+    scrape_single_college(row, website_url, checkpoint, checkpoint_file, output_file)
+
+
+def scrape_single_college(row, website_url, checkpoint, checkpoint_file, output_file):
+    """Scrape a college once its website has already been discovered."""
+    aishe = str(row['Aishe_Code'])
+    name = row['Clean_Name']
+    state = row['State']
+
     if website_url:
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
@@ -580,10 +644,12 @@ def process_single_college(row, checkpoint, checkpoint_file, output_file):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scrape AISHE colleges and export contact data.")
     parser.add_argument("--max-rows", type=int, default=0, help="Limit how many colleges are processed for a test run.")
+    parser.add_argument("--batch-size", type=int, default=0, help="Limit how many new colleges are processed in this run.")
     return parser
                 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    load_search_cache()
     parser = build_parser()
     args = parser.parse_args()
     
@@ -603,14 +669,30 @@ def main():
         df = df.head(args.max_rows)
         logging.info(f"Test mode enabled. Limiting AISHE scrape to {len(df)} rows.")
 
+    pending_jobs = []
+    for _, row in df.iterrows():
+        aishe = str(row['Aishe_Code'])
+        if aishe in checkpoint["processed_codes"]:
+            continue
+
+        name = row['Clean_Name']
+        state = row['State']
+        logging.info(f"Discovering website for: {name} ({state})")
+        website_url = find_official_website(name, state)
+        pending_jobs.append((row, website_url))
+
+    if args.batch_size and args.batch_size > 0:
+        pending_jobs = pending_jobs[:args.batch_size]
+        logging.info(f"Batch mode enabled. Limiting this run to {len(pending_jobs)} new colleges.")
+
     # --- THE PARALLEL THREAD POOL ---
     # MAX_WORKERS = 3. Do not set this higher than 5 unless you want to get IP banned.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         # Submit all the rows to the thread pool
         futures = []
-        for index, row in df.iterrows():
+        for row, website_url in pending_jobs:
             futures.append(
-                executor.submit(process_single_college, row, checkpoint, checkpoint_file, output_file)
+                executor.submit(scrape_single_college, row, website_url, checkpoint, checkpoint_file, output_file)
             )
             
         # Wait for all threads to finish

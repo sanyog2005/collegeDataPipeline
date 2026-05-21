@@ -12,3 +12,5 @@ dnspython
 pdfplumber
 googlesearch-python
 lxml
+fastapi
+uvicorn
