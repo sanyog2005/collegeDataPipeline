@@ -12,9 +12,6 @@ on:
         description: "Dispatch the next batch automatically if work remains"
         required: false
         default: "true"
-  # Uncomment the next two lines to make it run automatically every night at midnight UTC
-  # schedule:
-  #   - cron: '0 0 * * *'
 
 permissions:
   contents: write
@@ -53,7 +50,7 @@ jobs:
         env:
           BATCH_SIZE: ${{ inputs.batch_size }}
         run: |
-          # Running the pipeline. We don't use systemd here because GitHub manages the execution.
+          # Running the pipeline.
           python run_pipeline.py --batch-size "$BATCH_SIZE" --final-output final_north_india_deep_contacts.xlsx
 
       - name: Commit scraper state
@@ -68,7 +65,8 @@ jobs:
             git add official_website_cache.json
           fi
           if ! git diff --cached --quiet; then
-            git commit -m "Update scraper state"
+            # ADDED [skip ci] HERE TO PREVENT TRIGGER LOOPS
+            git commit -m "chore: update scraper state [skip ci]"
             git push
           else
             echo "No state changes to commit."
@@ -104,7 +102,8 @@ jobs:
           PY
 
       - name: Dispatch next batch
-        if: always() && inputs.auto_continue == 'true' && steps.progress.outputs.continue_needed == 'true'
+        # CHANGED FROM always() TO !cancelled() SO YOU CAN KILL IT MANUALLY
+        if: "!cancelled() && inputs.auto_continue == 'true' && steps.progress.outputs.continue_needed == 'true'"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BATCH_SIZE: ${{ inputs.batch_size }}
@@ -118,7 +117,6 @@ jobs:
 
       - name: Upload Excel file as Artifact
         uses: actions/upload-artifact@v4
-        # This step runs even if the scraper fails halfway, so you can see partial results
         if: always() 
         with:
           name: scraper-results
