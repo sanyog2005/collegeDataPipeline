@@ -669,16 +669,23 @@ def main():
         df = df.head(args.max_rows)
         logging.info(f"Test mode enabled. Limiting AISHE scrape to {len(df)} rows.")
 
+    pending_rows = []
+    for _, row in df.iterrows():
+        aishe = str(row['Aishe_Code'])
+        if aishe in checkpoint["processed_codes"]:
+            continue
+        pending_rows.append(row)
+
     if args.batch_size and args.batch_size > 0:
-        df = df.head(args.batch_size)
-        logging.info(f"Batch mode enabled. Limiting this run to {len(df)} rows.")
+        pending_rows = pending_rows[:args.batch_size]
+        logging.info(f"Batch mode enabled. Limiting this run to {len(pending_rows)} unprocessed rows.")
 
     # --- THE PARALLEL THREAD POOL ---
     # MAX_WORKERS = 3. Do not set this higher than 5 unless you want to get IP banned.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         # Submit all the rows to the thread pool
         futures = []
-        for _, row in df.iterrows():
+        for row in pending_rows:
             futures.append(
                 executor.submit(process_single_college, row, checkpoint, checkpoint_file, output_file)
             )
